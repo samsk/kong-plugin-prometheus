@@ -13,8 +13,8 @@ local metrics = {}
 -- prometheus.lua instance
 local prometheus
 
--- the clustering module, lazy imported
-local clustering
+-- the clustering and declarative module, lazily imported
+local clustering, declarative
 local cp_metrics
 
 -- use the same counter library shipped with Kong
@@ -77,8 +77,18 @@ local function init()
                                          {"service", "route", "type"})
 
 
+
+  -- For all generic dbless node
+  if kong.configuration.database == "off" then
+    declarative = require("kong.db.declarative")
+
+    metrics.config_current_hash = prometheus:gauge("config_current_hash",
+                                                        "Current config hash numeric value for this node")
+  end
+
+  local role = kong.configuration.role
   -- Hybrid mode status
-  if kong.configuration.role == "control_plane" then
+  if role == "control_plane" then
     cp_metrics = true
 
     clustering = require("kong.clustering")
@@ -96,6 +106,12 @@ local function init_worker()
   prometheus:init_worker()
 end
 
+-- Convert the MD5 hex string to its numeric representation
+-- Note the following will be represented as a float instead of int64 since luajit
+-- don't like int64. Good news is prometheus uses float instead of int64 as well
+local function config_hash_to_number(hash_str)
+  return tonumber("0x" .. hash_str)
+end
 
 -- Since in the prometheus library we create a new table for each diverged label
 -- so putting the "more dynamic" label at the end will save us some memory
@@ -255,6 +271,14 @@ local function collect()
                                         {res.workers_lua_vms[i].pid})
   end
 
+  if metrics.config_current_hash then
+    local current_hash = declarative.get_current_hash()
+    -- current_hash is true if it's load from file
+    if current_hash and current_hash ~= true then
+      metrics.config_current_hash:set(config_hash_to_number(current_hash))
+    end
+  end
+
   -- Hybrid mode status
   if cp_metrics then
     -- Cleanup old metrics
@@ -265,9 +289,7 @@ local function collect()
     for node_id, status in pairs(data_planes) do
       local labels = { node_id, status.hostname, status.ip }
       metrics.dataplane_last_seen:set(status.last_seen, labels)
-      -- Note the following will be represented as a float instead of int64 since luajit
-      -- don't like int64. Good news is prometheus uses float instead of int64 as well
-      metrics.dataplane_config_hash:set(tonumber("0x" .. status.config_hash), labels)
+      metrics.dataplane_config_hash:set(config_hash_to_number(status.config_hash), labels)
     end
   end
 
