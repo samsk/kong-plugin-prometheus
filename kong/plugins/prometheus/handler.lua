@@ -15,9 +15,9 @@ function PrometheusHandler.init_worker()
 end
 
 
-function PrometheusHandler.log()
+function PrometheusHandler.log(self, conf)
   local message = kong.log.serialize()
-  prometheus.log(message)
+  prometheus.log(conf, message)
 end
 
 

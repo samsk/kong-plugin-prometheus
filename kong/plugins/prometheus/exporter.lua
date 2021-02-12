@@ -73,6 +73,9 @@ local function init()
                                          "Total bandwidth in bytes " ..
                                          "consumed per service/route in Kong",
                                          {"service", "route", "type"})
+  metrics.consumer_status = prometheus:counter("http_consumer_status",
+                                          "HTTP status codes for customer per service/route in Kong",
+                                          {"service", "route", "code", "consumer"})
 end
 
 local function init_worker()
@@ -83,6 +86,7 @@ end
 -- Since in the prometheus library we create a new table for each diverged label
 -- so putting the "more dynamic" label at the end will save us some memory
 local labels_table = {0, 0, 0}
+local labels_table_consumer = {0, 0, 0, 0}
 local upstream_target_addr_health_table = {
   { value = 0, labels = { 0, 0, 0, "healthchecks_off" } },
   { value = 0, labels = { 0, 0, 0, "healthy" } },
@@ -104,7 +108,7 @@ end
 local log
 
 if ngx.config.subsystem == "http" then
-  function log(message)
+  function log(conf, message)
     if not metrics then
       kong.log.err("prometheus: can not log metrics because of an initialization "
               .. "error, please make sure that you've declared "
@@ -159,10 +163,21 @@ if ngx.config.subsystem == "http" then
       labels_table[3] = "kong"
       metrics.latency:observe(kong_proxy_latency, labels_table)
     end
+
+    if conf.per_consumer and message.consumer ~= nil then
+      local consumer = message.consumer.username
+      if consumer ~= nil then
+        labels_table_consumer[1] = labels_table[1]
+        labels_table_consumer[2] = labels_table[2]
+        labels_table_consumer[3] = message.response.status
+        labels_table_consumer[4] = consumer
+        metrics.consumer_status:inc(1, labels_table_consumer)
+      end
+    end
   end
 
 else
-  function log(message)
+  function log(conf, message)
     if not metrics then
       kong.log.err("prometheus: can not log metrics because of an initialization "
               .. "error, please make sure that you've declared "
@@ -303,9 +318,9 @@ local function collect(with_stream)
 
   ngx.print(metric_data())
 
-  if stream_available then
-    ngx.print(stream_api.request("prometheus", ""))
-  end
+--  if stream_available then
+--    ngx.print(stream_api.request("prometheus", ""))
+--  end
 end
 
 local function get_prometheus()
