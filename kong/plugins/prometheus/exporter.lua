@@ -76,6 +76,24 @@ local function init()
   metrics.consumer_status = prometheus:counter("http_consumer_status",
                                           "HTTP status codes for customer per service/route in Kong",
                                           {"service", "route", "code", "consumer"})
+
+  -- per location / url param
+  metrics.param_total = prometheus:counter("http_url_param_total",
+                                          "HTTP status codes for specific GET param in Kong",
+                                          {"service", "route", "param"})
+
+  metrics.param_consumer_total = prometheus:counter("http_url_param_consumer_total",
+                                          "HTTP status codes for specific GET param in Kong",
+                                          {"service", "route", "param", "consumer"})
+
+  metrics.location_total = prometheus:counter("http_url_location_total",
+                                          "HTTP status codes for specific URL location in Kong",
+                                          {"service", "route", "location"})
+
+  metrics.location_consumer_total = prometheus:counter("http_url_location_consumer_total",
+                                          "HTTP status codes for specific URL location in Kong",
+                                          {"service", "route", "location", "consumer"})
+
 end
 
 local function init_worker()
@@ -164,14 +182,82 @@ if ngx.config.subsystem == "http" then
       metrics.latency:observe(kong_proxy_latency, labels_table)
     end
 
+    local consumer
     if conf.per_consumer and message.consumer ~= nil then
-      local consumer = message.consumer.username
-      if consumer ~= nil then
-        labels_table_consumer[1] = labels_table[1]
-        labels_table_consumer[2] = labels_table[2]
-        labels_table_consumer[3] = message.response.status
-        labels_table_consumer[4] = consumer
-        metrics.consumer_status:inc(1, labels_table_consumer)
+      consumer = message.consumer.username
+    end
+
+    if consumer ~= nil then
+      labels_table_consumer[1] = labels_table[1]
+      labels_table_consumer[2] = labels_table[2]
+      labels_table_consumer[3] = message.response.status
+      labels_table_consumer[4] = consumer
+      metrics.consumer_status:inc(1, labels_table_consumer)
+    end
+
+    if conf.param_collect_list then
+      local value
+      local args, err = ngx.req.get_uri_args()
+      for _, param in ipairs(conf.param_collect_list) do
+        if args[param] ~= nil and type(args[param]) ~= 'table' then
+          value = args[param]
+          break
+        end
+      end
+
+      if value ~= nil then
+        if conf.param_value_extract ~= nil then
+          local match, err = ngx.re.match(value, conf.param_value_extract, 'aio')
+          if err then
+            kong.log.err("prometheus: failed to extract param value becase of a regex error - " .. err)
+            value = nil
+          elseif match == nil or (not match[1] and not match['param']) then
+            value = nil
+          elseif match['param'] then
+            value = match['param']
+          else
+            value = match[1]
+          end
+        end
+
+        if value ~= nil then
+          if conf.per_consumer and consumer ~= nil then
+            labels_table_consumer[3] = value
+            labels_table_consumer[4] = consumer
+            metrics.param_consumer_total:inc(1, labels_table_consumer)
+          else
+            labels_table[3] = value
+            metrics.param_total:inc(1, labels_table)
+          end
+        end
+      end
+    end
+
+    if conf.location_collect then
+      local value = ngx.var.uri
+      if conf.location_extract ~= nil then
+        local match, err = ngx.re.match(value, conf.location_extract, 'aio')
+        if err then
+          kong.log.err("prometheus: failed to extract location portion becase of a regex error - " .. err)
+          value = nil
+        elseif match == nil or (not match[1] and not match['location']) then
+          value = nil
+        elseif match['location'] then
+          value = match['location']
+        else
+          value = match[1]
+        end
+      end
+
+      if value ~= nil then
+        if conf.per_consumer and consumer ~= nil then
+          labels_table_consumer[3] = value
+          labels_table_consumer[4] = consumer
+          metrics.location_consumer_total:inc(1, labels_table_consumer)
+        else
+          labels_table[3] = value
+          metrics.location_total:inc(1, labels_table)
+        end
       end
     end
   end
@@ -318,9 +404,10 @@ local function collect(with_stream)
 
   ngx.print(metric_data())
 
---  if stream_available then
+--  XXX: temporarily disabled because stream_api not working (DO NOT UPSTREAM !)
+  if stream_available then
 --    ngx.print(stream_api.request("prometheus", ""))
---  end
+  end
 end
 
 local function get_prometheus()
