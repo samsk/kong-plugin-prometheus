@@ -18,6 +18,12 @@ local prometheus
 -- use the same counter library shipped with Kong
 package.loaded['prometheus_resty_counter'] = require("resty.counter")
 
+local enterprise
+local pok = pcall(require, "kong.enterprise_edition.licensing")
+if pok then
+  enterprise = require("kong.plugins.prometheus.enterprise.exporter")
+end
+
 
 local function init()
   local shm = "prometheus_metrics"
@@ -73,6 +79,7 @@ local function init()
                                          "Total bandwidth in bytes " ..
                                          "consumed per service/route in Kong",
                                          {"service", "route", "type"})
+
   metrics.consumer_status = prometheus:counter("http_consumer_status",
                                           "HTTP status codes for customer per service/route in Kong",
                                           {"service", "route", "code", "consumer"})
@@ -94,6 +101,9 @@ local function init()
                                           "HTTP status codes for specific URL location in Kong",
                                           {"service", "route", "location", "consumer"})
 
+  if enterprise then
+    enterprise.init(prometheus)
+  end
 end
 
 local function init_worker()
@@ -396,6 +406,10 @@ local function metric_data()
                                         {res.workers_lua_vms[i].pid})
   end
 
+  if enterprise then
+    enterprise.metric_data()
+  end
+
   return prometheus:metric_data()
 end
 
@@ -404,9 +418,8 @@ local function collect(with_stream)
 
   ngx.print(metric_data())
 
---  XXX: temporarily disabled because stream_api not working (DO NOT UPSTREAM !)
   if stream_available then
---    ngx.print(stream_api.request("prometheus", ""))
+    ngx.print(stream_api.request("prometheus", ""))
   end
 end
 
